@@ -1,0 +1,642 @@
+---
+title: "P8106 Final report"
+author: "Pengyuan Su (ps3195)"
+date: "5/6/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+
+library(caret)
+library(pls)
+library(patchwork)
+library(splines)
+library(gam)
+library(mgcv)
+library(boot)
+library(ggplot2)
+library(pdp)
+library(pROC)
+library(earth)
+library(visdat)
+library(corrplot)
+library(glmnet)
+library(tidyverse)
+
+knitr::opts_chunk$set(
+    fig.align = 'center',
+    message = F,
+    warning = F,
+    echo = T
+ )
+
+options(digits = 4)
+
+set.seed(2021)
+```
+
+## Introduction
+
+## Exploratory analysis/visualization
+
+## Model
+
+## Conclusion
+
+
+## Apendix
+
+```{r import, echo=FALSE}
+
+house = read_csv("./data/houseprice.csv") %>% 
+  janitor::clean_names() %>% 
+  select(-date, -street, -statezip, -country, -city)
+
+house_df = house %>% 
+  mutate(
+    #price = price/1000000,
+    yr_renovated = ifelse(yr_renovated == 0, yr_built, yr_renovated),
+    yr_built = 2014 - yr_built,
+    yr_renovated = 2014 - yr_renovated 
+  ) 
+
+```
+
+
+
+```{r set NA and drop, echo=F}
+house_df[, 1][house_df[, 1] == 0] <- NA
+
+skimr::skim_without_charts(house_df) 
+
+house_df = house_df %>% drop_na()
+```
+
+
+```{r}
+house_df = house_df %>% 
+  mutate(
+    price = log(price)
+  )
+```
+
+# Part 1
+
+```{r set train and tesst, echo=FALSE}
+set.seed(2021)
+
+#Define train and test
+trRows = createDataPartition(house_df$price, p = .8, list = F)
+train_df = house_df[trRows,]
+test_df = house_df[-trRows,]
+```
+
+
+```{r Define X, Y and control, echo=FALSE}
+
+# full data
+full_X = model.matrix(price ~ .,house_df)[,-1]
+full_Y = house_df$price
+
+# train data
+train_X = model.matrix(price ~ .,train_df)[,-1]
+train_Y = train_df$price
+
+# test data
+test_X = model.matrix(price ~ .,test_df)[,-1]
+test_Y = test_df$price
+
+# Control
+ctr = trainControl(method = "cv",number = 10)
+```
+
+
+```{r visualization, echo = F, fig.height=3}
+x = model.matrix(price ~., house_df)[,-1]
+y = house_df$price
+
+featurePlot(x, y, plot = "scatter", labels = c("","Y"), type = c("p"), layout = c(6, 2))
+```
+
+
+```{r correlation, echo=FALSE, fig.height=3}
+correlations <- cor(house_df[,1:13])
+corrplot(correlations, method="circle")
+```
+
+
+
+```{r fit models, echo=F, cache = TRUE}
+set.seed(2021)
+
+# Linear Model
+lm.fit = train(
+    x = train_X,
+    y = train_Y, 
+    method = 'lm',
+    trControl = ctr,
+    metric = 'RMSE'
+)
+
+#linear = lm(price ~., data=train_df)
+#step(linear, direction = "backward")
+
+
+# Ridge
+ridge.fit = train(
+  x = train_X,
+  y = train_Y,
+  method = 'glmnet',
+  tuneGrid = expand.grid(alpha = 0, lambda = exp(seq(5, -10, length = 100))),
+  trControl = ctr,
+  metric = 'RMSE'
+)
+#plot(ridge.fit, xTrans = log)
+
+# Lasso
+lasso.fit = train(
+  x = train_X,
+  y = train_Y,
+  method = 'glmnet',
+  tuneGrid = expand.grid(alpha = 1, lambda = exp(seq(3, -15, length = 100))),
+  trControl = ctr
+)
+#plot(lasso.fit, xTrans = log)
+
+# PCR
+pcr.fit = train(
+  x = train_X,
+  y = train_Y,
+  method = "pcr",
+  tuneLength = length(train_df) - 1,
+  trControl = ctr,
+  scale = TRUE
+)
+#validationplot(pcr.fit$finalModel, val.type="MSEP", legendpos = "topright")
+
+# GAM
+gam.fit = train(
+  train_X,
+  train_Y,
+  method = "gam",
+  tuneGrid = data.frame(method = "GCV.Cp",
+                        select = c(TRUE,FALSE)),
+  trControl = ctr
+)
+
+# MARS
+mars.fit = train(
+  train_X,
+  train_Y,
+  method = "earth",
+  tuneGrid = expand.grid(degree = 1:2, nprune = 2:10),
+  trControl = ctr
+)
+```
+
+
+
+
+
+
+
+# Part 2
+
+```{r}
+house_df2 = 
+  house_df %>% 
+  mutate(
+    price = case_when(
+      price >= 13.4 ~ "high",
+      TRUE ~ "normal"
+    ),
+    across(where(is.character),as.factor)
+  ) 
+
+#house_df2$price = factor(house_df2$price, c("high", "normal"))
+#house_df2$bedrooms = factor(house_df2$bedrooms, c("six bedrooms and above", #"five bedrooms", "four bedrooms", "three bedrooms","two bedrooms", "one or #less bedroom"))
+#house_df2$bathrooms = factor(house_df2$bathrooms, c("three bathrooms and #above", "two bathrooms", "one bathroom", "less than one"))
+#house_df2$floors = factor(house_df2$floors, c("three and above", "two", #"one"))
+```
+
+## Models
+
+### Logistic Regression
+
+```{r}
+set.seed(2021)
+
+rowTrain <- createDataPartition(y=house_df2$price,
+                                p = 0.8,
+                                list = FALSE)
+
+ctr1 = trainControl(method = "cv",
+                      summaryFunction = twoClassSummary,
+                      classProbs = TRUE)
+
+
+```
+
+
+```{r cache = TRUE}
+set.seed(2021)
+
+# logistic regression
+glm.fit = train(
+  price ~ . ,
+  data = house_df2[rowTrain,],
+  method = "glm",
+  metric = "ROC",
+  trControl = ctr1
+)
+```
+
+```{r cache = TRUE}
+set.seed(2021)
+# regularized logistic regression
+glmnGrid = expand.grid(.alpha = seq(0,1, length = 6),
+                       .lambda = exp(seq(-11, -2, length = 20)))
+glmn.fit = train(
+  price ~ . ,
+  data = house_df2[rowTrain,],
+  method = "glmnet",
+  tuneGrid = glmnGrid,
+  metric = "ROC",
+  trControl = ctr1
+)
+
+```
+
+```{r}
+p_glmn = ggplot(glmn.fit, highlight = T) +
+  scale_x_continuous(trans = "log") +
+  labs(title = "logistics")
+```
+
+
+```{r cache = TRUE}
+set.seed(2021)
+# LDA
+
+lda.fit = train(
+  price ~ . ,
+  data = house_df2[rowTrain,],
+  method = "lda",
+  metric = "ROC",
+  trControl = ctr1)
+```
+
+
+```{r cache = TRUE}
+set.seed(2021)
+# mars 
+mars.fit2 = train(
+  price ~ . ,
+  data = house_df2[rowTrain,],
+  method = "earth",
+  tuneGrid = expand.grid(degree = 1:2, nprune = 2:20),
+  trControl = ctr1,
+  metric = "ROC"
+)
+
+```
+
+```{r}
+p_mars = ggplot(mars.fit2, highlight = T)
+```
+
+
+```{r cache = TRUE}
+tree.fit = train(
+  price ~ . ,
+  data = house_df2[rowTrain,],
+  method = "rpart",
+  tuneGrid = expand.grid(cp = exp(seq(-10, -5, length=50))),
+  trControl = caret::trainControl(method = "cv",
+                                  summaryFunction = twoClassSummary,
+                                  classProbs = T,
+                                  selectionFunction = "oneSE"),
+  metric = "ROC"
+)
+
+```
+
+```{r}
+p_tree = ggplot(tree.fit, highlight = T)
+```
+
+
+```{r cache = TRUE}
+set.seed(2021)
+
+gbmA.grid = expand.grid(n.trees = c(100, 1000, 5000),
+                       interaction.depth = 1:4,
+                       shrinkage = c(0.001, 0.003, 0.005),
+                       n.minobsinnode = 1)
+
+boosting.fit = train(
+  price ~ . ,
+  data = house_df2[rowTrain,],
+  method = "gbm",
+  distribution = "adaboost",
+  metric = "ROC",
+  tuneGrid = gbmA.grid,
+  trControl = ctr1,
+  verbose = F
+)
+
+```
+
+```{r}
+p_boost = ggplot(boosting.fit, highlight = T)
+```
+
+
+```{r cache = TRUE}
+set.seed(2021)
+rf.grid = expand.grid(mtry = 1:8, 
+                      splitrule = "gini",
+                      min.node.size = seq(2, 10, by=2))
+
+rf.fit = train(
+  price ~ . ,
+  data = house_df2[rowTrain,],
+  method = "ranger",
+  tuneGrid = rf.grid,
+  metric = "ROC",
+  trControl = ctr1
+)
+
+p_rf = ggplot(rf.fit, highlight = T)
+```
+
+```{r cache = TRUE}
+set.seed(2021)
+
+# linear kernel
+svml.fit <- train(
+  price ~ . ,
+  data = house_df2[rowTrain,],
+  method = "svmLinear2",
+  preprocess = c("center", "scale"),
+  tuneGrid = data.frame(cost = exp(seq(-5,-1,len=20))), 
+  trControl = ctr1)
+
+p_svml = ggplot(svml.fit, highlight = TRUE)
+```
+
+```{r cache = TRUE}
+library(kernlab)
+
+svmr.grid <- expand.grid(C = exp(seq(-5,2,len=10)), sigma = exp(seq(-8,-1,len=10)))
+
+# tunes over both cost and sigma
+set.seed(2021)
+
+svmr.fit <- train(
+  price ~ . ,
+  data = house_df2[rowTrain,],
+  method = "svmRadialSigma", 
+  preProcess = c("center", "scale"), 
+  tuneGrid = svmr.grid,
+  trControl = ctr1)
+
+ggplot(svmr.fit, highlight = TRUE)
+```
+
+```{r cache = TRUE}
+set.seed(2021)
+
+gam.fit = train(
+  price ~ . ,
+  data = house_df2[rowTrain,],
+  method = "gam",
+  metric = "ROC",
+  trControl = ctr1
+)
+```
+
+```{r}
+gam.fit$finalModel
+```
+
+
+```{r}
+set.seed(2021)
+resample = resamples(
+  list(
+    logistic = glm.fit,
+    glmnet = glmn.fit,
+    mars = mars.fit2,
+    lda = lda.fit,
+    tree = tree.fit,
+    adaboost = boosting.fit,
+    random.forest = rf.fit,
+    linear.kernel = svml.fit,
+    radial.kernel = svmr.fit,
+    gam = gam.fit
+  ),
+  metric = c("ROC", "Kappa")
+)
+
+summary(resample)
+
+bwplot(resample, metric = c("ROC", "Sens"))
+```
+
+
+```{r}
+# importance
+summary(boosting.fit$finalModel, las = 2, cBars = 19, cex.names = 0.8)
+```
+
+
+
+```{r}
+# ROC
+
+# do prediction on test data
+set.seed(2021)
+
+glm_pred <- predict(glm.fit, 
+                    newdata = house_df2[-rowTrain,2:13],
+                    type = "raw"
+                    )
+
+glmn_pred <- predict(glmn.fit,
+                     newdata = house_df2[-rowTrain,2:13],
+                    type = "raw")
+
+mars_pred <- predict(mars.fit2,
+                    newdata = house_df2[-rowTrain,2:13],
+                    type = "raw")
+
+lda_pred <- predict(lda.fit,
+                    newdata = house_df2[-rowTrain,2:13],
+                    type = "raw")
+
+tree_pred <- predict(tree.fit,
+                    newdata = house_df2[-rowTrain,2:13],
+                    type = "raw")
+
+boost_pred <- predict(boosting.fit,
+                    newdata = house_df2[-rowTrain,2:13],
+                    type = "raw")
+
+rf_pred <- predict(rf.fit,
+                    newdata = house_df2[-rowTrain,2:13],
+                    type = "raw")
+
+svml_pred <- predict(svml.fit,
+                    newdata = house_df2[-rowTrain,2:13],
+                    type = "raw")
+
+svmr_pred <- predict(svmr.fit,
+                    newdata = house_df2[-rowTrain,2:13],
+                    type = "raw")
+
+gam_pred <- predict(gam.fit, 
+                    newdata = house_df2[-rowTrain,2:13],
+                    type = "raw")
+
+glm_pred1 <- predict(glm.fit, 
+                    newdata = house_df2[-rowTrain,2:13],
+                    type = "prob"
+                    )
+
+glmn_pred1 <- predict(glmn.fit,
+                     newdata = house_df2[-rowTrain,2:13],
+                    type = "prob")
+
+mars_pred1 <- predict(mars.fit2,
+                    newdata = house_df2[-rowTrain,2:13],
+                    type = "prob")
+
+lda_pred1 <- predict(lda.fit,
+                    newdata = house_df2[-rowTrain,2:13],
+                    type = "prob")
+
+tree_pred1 <- predict(tree.fit,
+                    newdata = house_df2[-rowTrain,2:13],
+                    type = "prob")
+
+boost_pred1 <- predict(boosting.fit,
+                    newdata = house_df2[-rowTrain,2:13],
+                    type = "prob")
+
+rf_pred1 <- predict(rf.fit,
+                    newdata = house_df2[-rowTrain,2:13],
+                    type = "prob")
+
+svml_pred1 <- predict(svml.fit,
+                    newdata = house_df2[-rowTrain,2:13],
+                    type = "prob")
+
+svmr_pred1 <- predict(svmr.fit,
+                    newdata = house_df2[-rowTrain,2:13],
+                    type = "prob")
+
+gam_pred1 <- predict(gam.fit, 
+                    newdata = house_df2[-rowTrain,2:13],
+                    type = "prob")
+
+roc.glm <- roc(house_df2$price[-rowTrain],
+               controls = glm_pred1$normal,
+               cases = glm_pred1$high)
+
+roc.glmn <- roc(house_df2$price[-rowTrain],
+               controls = glmn_pred1$normal,
+               cases = glmn_pred1$high)
+
+roc.mars <- roc(house_df2$price[-rowTrain],
+               controls = mars_pred1$normal,
+               cases = mars_pred1$high)
+
+roc.lda <- roc(house_df2$price[-rowTrain],
+               controls = lda_pred1$normal,
+               cases = lda_pred1$high)
+
+roc.tree <- roc(house_df2$price[-rowTrain],
+               controls = tree_pred1$normal,
+               cases = tree_pred1$high)
+
+roc.boost <- roc(house_df2$price[-rowTrain],
+               controls = boost_pred1$normal,
+               cases = boost_pred1$high)
+
+roc.rf <- roc(house_df2$price[-rowTrain],
+               controls = rf_pred1$normal,
+               cases = rf_pred1$high)
+
+roc.svml <- roc(house_df2$price[-rowTrain],
+               controls = svml_pred1$normal,
+               cases = svml_pred1$high)
+
+roc.svmr <- roc(house_df2$price[-rowTrain],
+               controls = svmr_pred1$normal,
+               cases = svmr_pred1$high)
+
+roc.gam <- roc(house_df2$price[-rowTrain],
+               controls = gam_pred1$normal,
+               cases = gam_pred1$high)
+
+auc <- c(roc.glm$auc[1],
+         roc.glmn$auc[1],
+         roc.mars$auc[1],
+         roc.lda$auc[1],
+         roc.tree$auc[1],
+         roc.boost$auc[1],
+         roc.rf$auc[1],
+         roc.svml$auc[1],
+         roc.svmr$auc[1],
+         roc.gam$auc[1])
+```
+
+```{r}
+plot(roc.glm, legacy.axes = TRUE) 
+plot(roc.glmn, col = 2, add = TRUE) 
+plot(roc.lda, col = 3, add = TRUE) 
+plot(roc.tree, col = 4, add = TRUE) 
+plot(roc.boost, col = 5, add = TRUE)
+plot(roc.rf, col = 6, add = TRUE)
+plot(roc.svml, col = 7, add = TRUE)
+plot(roc.svmr, col = 8, add = TRUE)
+plot(roc.gam, col = 9, add = TRUE)
+plot(roc.mars, col = 10, add = TRUE)
+
+modelNames <- c("glm","glmn","lda","tree","adaboost", "random forests", "linear kernel", "radial kernel", "gam", "mars")
+
+legend("bottomright", legend = paste0(modelNames, ": ", round(auc,3)),
+col = 1:5, lwd = 2)
+```
+
+```{r}
+library(ModelMetrics)
+
+tibble(
+glm = c(mse(glm_pred, house_df2[-rowTrain,]$price)),
+
+glmn = c(mse(glmn_pred, house_df2[-rowTrain,]$price)),
+
+lda = c(mse(lda_pred, house_df2[-rowTrain,]$price)),
+
+gam = c(mse(gam_pred, house_df2[-rowTrain,]$price)),
+
+adaboost = c(mse(boost_pred, house_df2[-rowTrain,]$price)),
+
+tree = c(mse(tree_pred, house_df2[-rowTrain,]$price)),
+
+random_forest = c(mse(rf_pred, house_df2[-rowTrain,]$price)),
+
+linear_kernel = c(mse(svml_pred, house_df2[-rowTrain,]$price)),
+
+radial_kernel = c(mse(svmr_pred, house_df2[-rowTrain,]$price)),
+
+mars = c(mse(mars_pred, house_df2[-rowTrain,]$price))) %>% 
+  knitr::kable()
+  
+
+```
+
+
+
